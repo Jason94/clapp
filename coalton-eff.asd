@@ -5,11 +5,13 @@
   :maintainer "Jason Walker"
   :mailto "jason0@pm.me"
   :license ""
-  :depends-on ("bt"
+  :depends-on ("bordeaux-threads"
+               "alexandria"
                "coalton")
   :components ((:module "src"
                 :components
-                ((:file "main"))))
+                ((:file "pool")
+                 (:file "main"))))
   :description "A typesafe effect system in Common Lisp Coalton."
   :in-order-to ((test-op (test-op "coalton-eff/tests"))))
 
@@ -20,6 +22,7 @@
                "rove")
   :components ((:module "tests"
                 :components
-                ((:file "main"))))
+                ((:file "pool")
+                 (:file "main"))))
   :description "Test system for coalton-eff"
   :perform (test-op (op c) (symbol-call :rove :run c)))
