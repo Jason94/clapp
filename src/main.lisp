@@ -4,7 +4,7 @@
         #:private-coalton.io/term)
   (:local-nicknames
    (#:l #:coalton-library/list)
-   (#:pl #:coalton-eff/pool)
+   (#:pl #:coalton-eff/pool-coalton)
    (#:f #:coalton-library/monad/free)
    (#:ft #:coalton-library/monad/freet)))
 (in-package #:coalton-eff/main)
@@ -73,6 +73,32 @@
     (run (make-list t))))
 
 (coalton-toplevel
+  (define (run-in-par pool t)
+    (do
+      (x <- (ft:run-freeT t))
+      (match x
+        ((ft:FreeF (Fork% t1 t2))
+         (do
+          (pl:submit-task pool
+                          (fn ()
+                            ;; TODO: This should definitely *not* call run! here
+                            (run! (run-in-par pool t2))
+                            Unit))
+          (run-in-par pool t1)))
+        ((ft:FreeF (Yield% t-next))
+         (run-in-par pool t-next))
+        ;; TODO: learn how to stop
+        ((ft:FReeF (Done%))
+         (pure Unit))
+        ((ft:Val _)
+         (pure Unit)))))
+
+  (declare run-in-pool (Integer -> Spawn IO :a -> IO Unit))
+  (define (run-in-pool workers t)
+    (let ((pool (pl:make-thread-pool workers)))
+      (run-in-par pool t))))
+
+(coalton-toplevel
   (declare thread1 (Integer -> Spawn IO Unit))
   (define (thread1 x)
     (do
@@ -91,9 +117,17 @@
   (define main-thread
     (do
      (lift (write-line "Forking thread #1"))
+     yield
      (fork (thread1 10))
      (lift (write-line "Forking thread #2"))
-     (fork thread2)))
+     (lift (sleep 2))
+     (fork thread2)
+     (fork thread2)
+     yield
+     (lift (write-line "Forking thread #3"))))
   )
 
 (coalton (run! (round-robin main-thread)))
+(coalton (run! (run-in-pool 4 main-thread)))
+
+(coalton (run! (run-in-pool 4 thread2)))

@@ -3,14 +3,20 @@
   (:import-from #:alexandria
     #:when-let
     #:if-let)
-  (:export #:make-thread-pool
-           #:make-dynamic-thread-pool
-           #:submit-task
-           #:shutdown-pool
-           #:with-thread-pool
-           #:with-dynamic-thread-pool
-           #:future-ready-p
-           #:get-future-value))
+  (:export
+   #:future
+
+   #:thread-pool
+   #:make-thread-pool
+   #:make-dynamic-thread-pool
+   #:submit-task
+   #:shutdown-pool
+   #:with-thread-pool
+   #:with-dynamic-thread-pool
+   #:future-ready-p
+   #:get-future-value))
+
+(declaim (optimize (speed 0) (space 0) (debug 3)))
 
 (in-package #:coalton-eff/pool)
 
@@ -20,6 +26,7 @@
 (defclass future ()
   ((value :initform nil :accessor future-value)
    (ready-p :initform nil :accessor future-ready-p)
+   (wait-lock :initform (make-lock "future-wait") :reader future-wait-lock)
    (condition :initform (make-condition-variable) :accessor future-condition)))
 
 (defun make-future ()
@@ -32,7 +39,8 @@
 
 (defun get-future-value (f &key (timeout nil))
   (unless (future-ready-p f)
-    (condition-wait (future-condition f) timeout))
+    (with-lock-held ((future-wait-lock f))
+      (condition-wait (future-condition f) (future-wait-lock f) :timeout timeout)))
   (if (future-ready-p f)
       (future-value f)
       (error "Future timed out")))
@@ -72,19 +80,21 @@
     pool))
 
 (defun static-worker-loop (pool)
-  (loop
-    (if-let (task (pop-next-task-safe pool))
-      (resolve-future (task-future task)
-                      (handler-case (funcall (task-thunk task))
-                        (error (e) e)))
-      (with-lock-held ((pool-work-mutex pool))
-        (condition-wait (pool-cond pool) (pool-work-mutex pool))))
-    ;; Note: This should *probably* be wrapped in a lock. But in theory, with-lock-held
-    ;; is undefined behavior when re-acquiring a lock held by the same thread. It should
-    ;; probably be a contract that pools can only be turned off, not turned back on, so
-    ;; this should probably be fine.
-    (unless (pool-running-p pool)
-      (return))))
+  (let ((id (gensym "pool")))
+    (loop
+      (if-let (task (pop-next-task-safe pool))
+        (progn
+          (resolve-future (task-future task)
+                          (handler-case (funcall (task-thunk task))
+                            (error (e) e))))
+        (with-lock-held ((pool-work-mutex pool))
+          (condition-wait (pool-cond pool) (pool-work-mutex pool))))
+      ;; Note: This should *probably* be wrapped in a lock. But in theory, with-lock-held
+      ;; is undefined behavior when re-acquiring a lock held by the same thread. It should
+      ;; probably be a contract that pools can only be turned off, not turned back on, so
+      ;; this should probably be fine.
+      (unless (pool-running-p pool)
+        (return)))))
 
 (defmethod submit-task ((pool thread-pool) thunk)
   (assert (functionp thunk))
@@ -168,3 +178,20 @@ Not thread safe!"
 (defmacro with-dynamic-thread-pool ((var min &key max) &body body)
   `(let ((,var (make-dynamic-thread-pool ,min :max ,max)))
      (unwind-protect (progn ,@body) (shutdown-pool ,var))))
+
+;;; Test function
+(defun demo-static-pool ()
+  "Compute the squares of 0–9 in parallel with a fixed-size pool of four workers.
+Returns the results in order."
+  (with-thread-pool (pool 4)
+    ;; Launch ten tasks.
+    (print
+     (let ((futs (loop for i from 0 below 8
+                       collect (submit-task pool
+                                            (lambda ()
+                                              ;; Simulate some work
+                                              (sleep 0.5)
+                                              (* i i))))))
+       (mapcar #'get-future-value futs)))))
+
+;; (demo-static-pool )
